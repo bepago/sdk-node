@@ -1,0 +1,35 @@
+{
+  "name": "bepago",
+  "version": "1.0.0",
+  "description": "SDK oficial de bePago para Node.js (18+, sin dependencias)",
+  "type": "module",
+  "main": "index.mjs",
+  "exports": {
+    ".": "./index.mjs"
+  },
+  "files": [
+    "index.mjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "bepago",
+    "pagos",
+    "payments",
+    "paraguay",
+    "cobros",
+    "payouts",
+    "webhooks"
+  ],
+  "homepage": "https://bepago.com/docs",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bepago/sdk-node.git"
+  },
+  "bugs": {
+    "url": "https://github.com/bepago/sdk-node/issues"
+  },
+  "engines": { "node": ">=18" },
+  "author": "bePago",
+  "license": "MIT"
+}

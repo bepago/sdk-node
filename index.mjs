@@ -70,9 +70,37 @@ export default function BePago(secret, opts = {}) {
       balance: () => request('GET', '/v1/balance'),
     },
     webhooks: {
-      verify: (webhookSecret, timestamp, body, signature) => {
-        const expected = createHmac('sha256', webhookSecret).update(timestamp + body, 'utf8').digest('hex');
-        return timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(signature, 'hex'));
+      /**
+       * Verifica un webhook de bePago y devuelve el evento parseado.
+       *
+       * Chequea la firma HMAC y la FRESCURA del timestamp: por defecto rechaza
+       * entregas fuera de ±5 minutos (configurable con `toleranceSeconds`). Lanza
+       * si la firma no valida o el timestamp está fuera de la ventana.
+       *
+       * Expone `id` (header X-BePago-Event-Id, estable entre reintentos): guardá
+       * los ids ya procesados para descartar duplicados de forma idempotente.
+       *
+       *   const evt = bp.webhooks.verify(secret, {
+       *     id: req.headers['x-bepago-event-id'],
+       *     timestamp: req.headers['x-webhook-timestamp'],
+       *     signature: req.headers['x-webhook-signature'],
+       *     body: rawBody, // el cuerpo EXACTO recibido, sin reserializar
+       *   });
+       *   if (seen.has(evt.id)) return; // duplicado
+       *   seen.add(evt.id);
+       *
+       * @returns {{ id: string, event: string, livemode: boolean, data: object }}
+       */
+      verify(webhookSecret, { id, timestamp, body, signature }, opts = {}) {
+        const toleranceMs = (opts.toleranceSeconds ?? 300) * 1000;
+        const expected = createHmac('sha256', webhookSecret).update(String(timestamp) + body, 'utf8').digest('hex');
+        const a = Buffer.from(expected, 'hex');
+        const b = Buffer.from(String(signature ?? ''), 'hex');
+        if (a.length !== b.length || !timingSafeEqual(a, b)) throw new Error('bePago webhook: firma inválida');
+        const age = Math.abs(Date.now() - Number(timestamp));
+        if (!Number.isFinite(age) || age > toleranceMs) throw new Error('bePago webhook: timestamp fuera de la ventana permitida');
+        const payload = JSON.parse(body);
+        return { id: id ?? payload.id, event: payload.event, livemode: payload.livemode, data: payload.data };
       },
     },
   };

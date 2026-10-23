@@ -62,7 +62,9 @@ await bp.payouts.balance();
 ### Verificar un webhook
 
 bePago firma cada webhook con `HMAC-SHA256` sobre `timestamp + body` usando el
-secreto del webhook. Verificá la firma antes de procesar el evento:
+secreto del webhook. `verify` chequea la firma **y la frescura del timestamp**
+(rechaza entregas fuera de ±5 minutos por defecto, configurable) y devuelve el
+evento ya parseado, con su `id`:
 
 ```js
 import BePago from 'bepago';
@@ -70,23 +72,32 @@ import BePago from 'bepago';
 const bp = BePago('sk_live_…');
 
 // En tu handler HTTP (body como string crudo, sin re-serializar):
-const timestamp = req.headers['x-timestamp'];
-const signature = req.headers['x-signature'];
-const rawBody = req.rawBody; // el cuerpo tal cual llegó
-
-const ok = bp.webhooks.verify(
-  'whsec_tu_secreto_de_webhook',
-  timestamp,
-  rawBody,
-  signature,
-);
-
-if (!ok) {
-  return res.status(400).send('firma inválida');
+let evt;
+try {
+  evt = bp.webhooks.verify('whsec_tu_secreto_de_webhook', {
+    id: req.headers['x-bepago-event-id'],
+    timestamp: req.headers['x-webhook-timestamp'],
+    signature: req.headers['x-webhook-signature'],
+    body: req.rawBody, // el cuerpo tal cual llegó, sin re-serializar
+  });
+} catch (e) {
+  return res.status(400).send('webhook inválido'); // firma o timestamp fuera de ventana
 }
 
-const evento = JSON.parse(rawBody);
-// procesar evento.type …
+// Anti-replay: cada evento trae un id ESTABLE entre reintentos. Guardá los ids
+// ya procesados y descartá los duplicados (los reintentos reenvían el mismo id
+// con un timestamp nuevo).
+if (await yaProcesado(evt.id)) return res.status(200).end();
+await marcarProcesado(evt.id);
+
+// procesar evt.event / evt.data …
+res.status(200).end();
+```
+
+Tolerancia configurable (ej. ±10 minutos):
+
+```js
+bp.webhooks.verify(secret, { id, timestamp, signature, body }, { toleranceSeconds: 600 });
 ```
 
 ## Documentación

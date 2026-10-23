@@ -1,6 +1,6 @@
 {
   "name": "bepago",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "SDK oficial de bePago para Node.js (18+, sin dependencias)",
   "type": "module",
   "main": "index.mjs",

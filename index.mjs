@@ -56,12 +56,28 @@ export default function BePago(secret, opts = {}) {
     return data;
   }
 
-  return {
+  const api = {
     charges: {
       create: (params) => request('POST', '/v1/charges', params),
       get: (ref) => request('GET', `/v1/charges/${encodeURIComponent(ref)}`),
       refund: (ref, reason) => request('POST', `/v1/charges/${encodeURIComponent(ref)}/refund`, { reason }),
       balance: () => request('GET', '/v1/charges/balance'),
+      /**
+       * Confirma el estado REAL de un cobro consultando la API (fuente de verdad).
+       * Usalo para decidir si entregás: nunca confíes en el navegador ni en el
+       * iframe. Devuelve `{ paid, status, charge }` — `paid` es true solo si el
+       * cobro figura `paid` en bePago.
+       *
+       *   const { paid, charge } = await bp.charges.confirm(orderId);
+       *   if (paid && charge.amount === order.amount) entregar();
+       *
+       * @returns {Promise<{ paid: boolean, status: string, charge: object }>}
+       */
+      async confirm(ref) {
+        const charge = await request('GET', `/v1/charges/${encodeURIComponent(ref)}`);
+        const status = charge?.status ?? charge?.data?.status;
+        return { paid: status === 'paid', status, charge };
+      },
     },
     payouts: {
       create: (params, idempotencyKey) => request('POST', '/v1/payouts', params, { idempotencyKey }),
@@ -102,6 +118,106 @@ export default function BePago(secret, opts = {}) {
         const payload = JSON.parse(body);
         return { id: id ?? payload.id, event: payload.event, livemode: payload.livemode, data: payload.data };
       },
+
+      /**
+       * Crea un manejador de webhooks seguro-por-defecto. Verifica firma y
+       * frescura (±5 min), descarta duplicados por X-BePago-Event-Id y SOLO
+       * invoca `onPaid` con eventos `charge.paid` válidos y no vistos. Siempre
+       * responde 200 a entregas válidas (aunque sean duplicadas, para que
+       * bePago deje de reintentar) y 400 a firmas/timestamps inválidos.
+       *
+       * No montes el parser de JSON del framework delante: el handler necesita
+       * el cuerpo CRUDO (string/Buffer) para validar la firma byte a byte. Usá
+       * los adapters `bp.webhooks.express()` / `bp.webhooks.fastify()` que ya
+       * resuelven eso.
+       *
+       *   const wh = bp.webhooks.handler({
+       *     secret: process.env.BEPAGO_WEBHOOK_SECRET,
+       *     onPaid: async ({ reference, data }) => { await entregar(reference); },
+       *     onEvent: async (evt) => {},            // opcional: todos los eventos
+       *     store: myRedisStore,                   // opcional: persistir ids vistos
+       *   });
+       *
+       * `store` por defecto es un Set en memoria. Para no entregar dos veces
+       * tras un reinicio, pasá un store con `has(id)` y `add(id)` (pueden ser
+       * async) respaldado por tu base.
+       *
+       * @returns {{ process(input): Promise<{status:number, body:string, duplicate:boolean, ok:boolean}>, express(): Function, fastify(): Function }}
+       */
+      handler(config = {}) {
+        const { secret, onPaid, onEvent } = config;
+        if (!secret) throw new Error('bePago webhooks.handler: falta `secret`');
+        const seen = config.store ?? defaultSeenStore();
+
+        async function process({ headers = {}, body }) {
+          const h = lowerHeaders(headers);
+          const raw = toRawBody(body);
+          let evt;
+          try {
+            evt = api.webhooks.verify(secret, {
+              id: h['x-bepago-event-id'],
+              timestamp: h['x-webhook-timestamp'],
+              signature: h['x-webhook-signature'],
+              body: raw,
+            }, config);
+          } catch (err) {
+            return { status: 400, body: JSON.stringify({ error: 'invalid_signature' }), duplicate: false, ok: false };
+          }
+          if (await seen.has(evt.id)) {
+            return { status: 200, body: JSON.stringify({ received: true, duplicate: true }), duplicate: true, ok: true };
+          }
+          await seen.add(evt.id);
+          try {
+            if (typeof onEvent === 'function') await onEvent(evt);
+            if (evt.event === 'charge.paid' && typeof onPaid === 'function') {
+              await onPaid({ reference: evt.data?.reference, data: evt.data, event: evt });
+            }
+          } catch (err) {
+            return { status: 500, body: JSON.stringify({ error: 'handler_error' }), duplicate: false, ok: false };
+          }
+          return { status: 200, body: JSON.stringify({ received: true }), duplicate: false, ok: true };
+        }
+
+        return {
+          process,
+          /** Middleware Express. Montalo con el raw body: app.post(url, express.raw({type:'*&#47;*'}), wh.express()) */
+          express() {
+            return async (req, res) => {
+              const r = await process({ headers: req.headers, body: req.body });
+              res.status(r.status).set('content-type', 'application/json').send(r.body);
+            };
+          },
+          /** Handler Fastify. Registrá un parser que deje el raw body (ver ejemplo en /docs). */
+          fastify() {
+            return async (req, reply) => {
+              const r = await process({ headers: req.headers, body: req.rawBody ?? req.body });
+              reply.code(r.status).header('content-type', 'application/json').send(r.body);
+            };
+          },
+        };
+      },
     },
   };
+  return api;
+}
+
+/** Store de ids vistos en memoria (por defecto). Para producción multi-proceso, pasá uno respaldado por tu base. */
+function defaultSeenStore() {
+  const set = new Set();
+  return { has: (id) => set.has(id), add: (id) => { set.add(id); } };
+}
+
+function lowerHeaders(headers) {
+  const out = {};
+  for (const [k, v] of Object.entries(headers || {})) out[String(k).toLowerCase()] = Array.isArray(v) ? v[0] : v;
+  return out;
+}
+
+function toRawBody(body) {
+  if (body == null) return '';
+  if (typeof body === 'string') return body;
+  if (Buffer.isBuffer(body)) return body.toString('utf8');
+  // Último recurso: si el framework ya parseó a objeto, reserializar romperá la
+  // firma. Lo exponemos igual para que falle ruidoso y no silencioso.
+  return typeof body === 'object' ? JSON.stringify(body) : String(body);
 }

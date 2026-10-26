@@ -84,6 +84,20 @@ export default function BePago(secret, opts = {}) {
       get: (id) => request('GET', `/v1/payouts/${encodeURIComponent(id)}`),
       cancel: (id) => request('POST', `/v1/payouts/${encodeURIComponent(id)}/cancel`),
       balance: () => request('GET', '/v1/balance'),
+      /**
+       * Lotes de pagos masivos. `create` carga el lote entero (hasta 1000 pagos);
+       * queda pendiente de aprobación en el panel (cuatro ojos) salvo que el
+       * comercio tenga habilitada la auto-aprobación por API.
+       *
+       *   const lote = await bp.payouts.batches.create({
+       *     payouts: [{ amount: 150000, destination: { type: 'alias', alias: 'juan.perez' }, external_id: 'premio-88' }],
+       *   }, 'idem-key-unica');
+       *   await bp.payouts.batches.get(lote.id);
+       */
+      batches: {
+        create: (params, idempotencyKey) => request('POST', '/v1/payouts/batches', params, { idempotencyKey }),
+        get: (id) => request('GET', `/v1/payouts/batches/${encodeURIComponent(id)}`),
+      },
     },
     webhooks: {
       /**

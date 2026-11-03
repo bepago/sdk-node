@@ -1,15 +1,31 @@
 {
   "name": "bepago",
-  "version": "1.5.0",
-  "description": "SDK oficial de bePago para Node.js (18+, sin dependencias)",
+  "version": "1.6.0",
+  "description": "SDK oficial de bePago para Node.js (18+, sin dependencias, con tipos TypeScript; import o require)",
   "type": "module",
-  "main": "index.mjs",
+  "main": "./index.cjs",
+  "module": "./index.mjs",
+  "types": "./index.d.ts",
   "exports": {
-    ".": "./index.mjs"
+    ".": {
+      "import": {
+        "types": "./index.d.ts",
+        "default": "./index.mjs"
+      },
+      "require": {
+        "types": "./index.d.cts",
+        "default": "./index.cjs"
+      }
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "index.mjs",
+    "index.cjs",
+    "index.d.ts",
+    "index.d.cts",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "keywords": [

@@ -1,8 +1,8 @@
 /**
- * bePago SDK — Node.js (18+, zero dependencies).
+ * bePago SDK — Node.js (18+, sin dependencias: solo módulos de Node).
  *
  * Usage:
- *   import BePago from 'bepago';
+ *   import BePago from 'bepago';          // o: const BePago = require('bepago');
  *   const bp = BePago('sk_test_…');   // el Key ID (pk_…) sale del secreto; con claves viejas: { keyId: 'pk_…' }
  *   const charge = await bp.charges.create({ reference: 'order-1', currency: 'PYG', amount: 150000, description: 'Test' });
  *   // opcional: method: 'qr_sip' | 'pix' | 'qr_ar' (uno de los activos del comercio) fuerza ese método
@@ -54,6 +54,11 @@ export default function BePago(secret, opts = {}) {
   // Sin Key ID (secreto del formato anterior) igual se puede verificar webhooks; la API lo pide al primer request
   const keyId = opts.keyId ?? keyIdFromSecret(secret);
   const timeoutMs = opts.timeoutMs ?? 30_000;
+  // Reintentos automáticos SOLO cuando repetir no puede duplicar nada: GET
+  // (lectura) ante red caída, tiempo agotado o 502/503/504; POST con clave de
+  // idempotencia (pagos y lotes) ante red caída o tiempo agotado (la misma
+  // clave = el mismo pago). Un POST sin clave (cobros, reembolsos) nunca.
+  const maxRetries = Math.max(0, Math.floor(opts.maxRetries ?? 2));
 
   function sign(method, path, body, idempotencyKey) {
     const timestamp = String(Date.now());
@@ -65,6 +70,18 @@ export default function BePago(secret, opts = {}) {
 
   async function request(method, path, body, extra = {}) {
     if (!keyId) throw new BePagoError(MISSING_KEY_ID, { code: 'missing_key_id' });
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await requestOnce(method, path, body, extra);
+      } catch (err) {
+        if (attempt >= maxRetries || !retryable(err, method, extra.idempotencyKey)) throw err;
+        await sleep(retryDelayMs(attempt));
+      }
+    }
+  }
+
+  async function requestOnce(method, path, body, extra) {
+    // Cada intento con su propio timestamp y nonce: un nonce no se usa dos veces
     const { timestamp, nonce, signature, bodyStr } = sign(method, path, body, extra.idempotencyKey);
     const headers = {
       'Content-Type': 'application/json',
@@ -232,7 +249,7 @@ export default function BePago(secret, opts = {}) {
 
         async function process({ headers = {}, body }) {
           const h = lowerHeaders(headers);
-          if (body != null && typeof body === 'object' && !Buffer.isBuffer(body)) {
+          if (body != null && typeof body === 'object' && !(body instanceof Uint8Array)) {
             // El framework ya parseó el JSON: reserializarlo cambia los bytes y la firma no valida.
             return { status: 400, body: JSON.stringify({ error: 'raw_body_required', message: RAW_BODY_HINT }), duplicate: false, ok: false };
           }
@@ -303,6 +320,25 @@ function requireIdempotencyKey(key) {
   return key;
 }
 
+/**
+ * ¿Se puede repetir este request sin riesgo? GET: red caída, tiempo agotado o
+ * 502/503/504. POST: solo con clave de idempotencia y sin respuesta (red o
+ * tiempo): con respuesta, la API ya decidió. Nunca un POST sin clave.
+ */
+function retryable(err, method, idempotencyKey) {
+  if (!(err instanceof BePagoError)) return false;
+  const noResponse = err.code === 'network_error' || err.code === 'timeout';
+  if (method === 'GET') return noResponse || err.status === 502 || err.status === 503 || err.status === 504;
+  return method === 'POST' && Boolean(idempotencyKey) && noResponse;
+}
+
+/** Espera antes del reintento N (0, 1…): 250 ms, 500 ms, 1 s… (tope 2 s) más un poco de azar. */
+function retryDelayMs(attempt) {
+  return Math.min(250 * 2 ** attempt, 2000) + Math.floor(Math.random() * 100);
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
 /** Store de ids vistos en memoria (por defecto). Para producción multi-proceso, pasá uno respaldado por tu base. */
 function defaultSeenStore() {
   const set = new Set();
@@ -322,6 +358,6 @@ const RAW_BODY_HINT = 'bePago webhook: llegó el cuerpo ya parseado (objeto) y l
 function toRawBody(body) {
   if (body == null) return '';
   if (typeof body === 'string') return body;
-  if (Buffer.isBuffer(body)) return body.toString('utf8');
+  if (body instanceof Uint8Array) return Buffer.from(body.buffer, body.byteOffset, body.byteLength).toString('utf8'); // Buffer incluido
   return String(body);
 }

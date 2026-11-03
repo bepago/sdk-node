@@ -1,6 +1,8 @@
 # bePago — SDK para Node.js
 
-SDK oficial de [bePago](https://bepago.com) para Node.js 18+. Sin dependencias.
+SDK oficial de [bePago](https://bepago.com) para Node.js 18+. Sin dependencias:
+usa solo módulos de Node (`node:crypto`) y el `fetch` que Node trae desde la 18.
+Con tipos TypeScript y para `import` o `require`.
 
 Cobros con checkout embebido, pagos masivos (payouts) y webhooks firmados
 (HMAC v2). Es el mismo SDK de la [guía de integración](https://bepago.com/docs):
@@ -9,10 +11,10 @@ cada ejemplo de acá funciona copiado tal cual.
 ## Instalación
 
 ```bash
-npm install github:bepago/sdk-node#v1.5.0
+npm install github:bepago/sdk-node#v1.6.0
 ```
 
-(Mientras el paquete npm `bepago` se actualiza a 1.5.0 se instala desde su tag
+(Mientras el paquete npm `bepago` se actualiza a 1.6.0 se instala desde su tag
 de GitHub: es el mismo paquete y el mismo `import BePago from 'bepago'`.)
 
 ## Uso
@@ -28,8 +30,41 @@ lleva adentro la clave pública (`pk_…`), así que alcanza con él. Las claves
 formato anterior no la traen: el SDK te la pide con un error claro y la pasás
 aparte, copiándola completa de la tabla de claves: `BePago(secret, { keyId: 'pk_…' })`.
 
-Opciones: `baseUrl` (`'https://bepago.com/api'`, con o sin `/v1` al final) y
-`timeoutMs` (30000).
+Opciones: `baseUrl` (`'https://bepago.com/api'`, con o sin `/v1` al final),
+`timeoutMs` (30000, por intento) y `maxRetries` (2; ver Reintentos).
+
+### CommonJS y TypeScript
+
+```js
+const BePago = require('bepago');            // CommonJS (Node 18+)
+const { BePagoError } = require('bepago');
+```
+
+Los tipos vienen en el paquete (`index.d.ts` para `import`, `index.d.cts` para
+`require`): `Charge`, `Payout`, `Batch`, `WebhookEvent`, `BePagoOptions`… sin
+instalar nada más.
+
+```ts
+import BePago, { BePagoError, type Charge } from 'bepago';
+const cobro: Charge = await bp.charges.get('pedido-1842');
+```
+
+### Reintentos
+
+El SDK reintenta solo lo que se puede repetir sin duplicar nada, hasta
+`maxRetries` veces (2 por defecto; `0` los apaga), con esperas cortas que se
+duplican (250 ms, 500 ms…):
+
+- **Consultas (GET):** ante red caída, tiempo agotado o un `502`/`503`/`504`.
+- **Pagos y lotes (POST con clave de idempotencia):** solo ante red caída o
+  tiempo agotado, siempre con la **misma** clave: si el primer intento llegó,
+  la API devuelve el mismo pago, no crea otro.
+- **Nunca** un POST sin clave de idempotencia (crear un cobro, reembolsar,
+  cancelar) ni una respuesta de la API (4xx, o un 5xx de un POST): esos te
+  llegan como error para que decidas vos.
+
+Cada intento va firmado de nuevo (timestamp y nonce propios). Si se agotan, el
+error es el del último intento.
 
 ### Errores
 

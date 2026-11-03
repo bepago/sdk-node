@@ -5,6 +5,7 @@
  *   import BePago from 'bepago';
  *   const bp = BePago('sk_test_…');
  *   const charge = await bp.charges.create({ reference: 'order-1', currency: 'PYG', amount: 150000, description: 'Test' });
+ *   // opcional: method: 'qr_sip' | 'pix' | 'qr_ar' (uno de los activos del comercio) fuerza ese método
  */
 import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 
@@ -80,7 +81,8 @@ export default function BePago(secret, opts = {}) {
       },
     },
     payouts: {
-      create: (params, idempotencyKey) => request('POST', '/v1/payouts', params, { idempotencyKey }),
+      /** `idempotencyKey` es OBLIGATORIO (mín. 8 caracteres), igual que en la API: el mismo valor = el mismo pago. */
+      create: (params, idempotencyKey) => request('POST', '/v1/payouts', params, { idempotencyKey: requireIdempotencyKey(idempotencyKey) }),
       get: (id) => request('GET', `/v1/payouts/${encodeURIComponent(id)}`),
       cancel: (id) => request('POST', `/v1/payouts/${encodeURIComponent(id)}/cancel`),
       balance: () => request('GET', '/v1/balance'),
@@ -95,7 +97,7 @@ export default function BePago(secret, opts = {}) {
        *   await bp.payouts.batches.get(lote.id);
        */
       batches: {
-        create: (params, idempotencyKey) => request('POST', '/v1/payouts/batches', params, { idempotencyKey }),
+        create: (params, idempotencyKey) => request('POST', '/v1/payouts/batches', params, { idempotencyKey: requireIdempotencyKey(idempotencyKey) }),
         get: (id) => request('GET', `/v1/payouts/batches/${encodeURIComponent(id)}`),
       },
     },
@@ -213,6 +215,17 @@ export default function BePago(secret, opts = {}) {
     },
   };
   return api;
+}
+
+/**
+ * Pagos y lotes llevan X-Idempotency-Key OBLIGATORIO (mín. 8 caracteres), igual
+ * que la API (400 missing_idempotency_key): se valida acá antes de firmar.
+ */
+function requireIdempotencyKey(key) {
+  if (typeof key !== 'string' || key.trim().length < 8) {
+    throw new Error('bePago: falta idempotencyKey (string de al menos 8 caracteres, único por pago o lote)');
+  }
+  return key;
 }
 
 /** Store de ids vistos en memoria (por defecto). Para producción multi-proceso, pasá uno respaldado por tu base. */

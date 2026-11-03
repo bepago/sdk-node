@@ -210,7 +210,7 @@ function BePago(secret, opts = {}) {
         const age = Math.abs(Date.now() - Number(timestamp));
         if (!Number.isFinite(age) || age > toleranceMs) throw new Error('bePago webhook: timestamp fuera de la ventana permitida');
         const payload = JSON.parse(body);
-        return { id: id ?? payload.id, event: payload.event, livemode: payload.livemode, test: payload.test === true, data: payload.data };
+        return { id: id ?? payload.id, event: payload.event, livemode: payload.livemode, merchant_id: payload.merchant_id ?? null, test: payload.test === true, data: payload.data };
       },
 
       /**

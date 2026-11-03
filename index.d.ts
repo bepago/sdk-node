@@ -184,6 +184,8 @@ export interface WebhookEvent<D = Record<string, unknown>> {
   id: string;
   event: string;
   livemode: boolean;
+  /** Tu ID de comercio (el del panel), como string con dígitos. */
+  merchant_id: string | null;
   /** true en el aviso de prueba de «Probar mi webhook» (no entregues nada). */
   test: boolean;
   data: D;

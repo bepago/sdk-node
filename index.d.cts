@@ -291,8 +291,11 @@ declare namespace BePago {
     /** Solo con claves sk_test_. */
     sandbox: {
       pay(ref: string): Promise<Charge>;
-      /** Carga saldo de prueba para pagos masivos (sin monto: la carga estándar; tope total del saldo de prueba). */
-      fund(amount?: number): Promise<TestFundResult>;
+      /**
+       * Carga saldo de prueba para pagos masivos (sin monto: la carga estándar; tope total del saldo de prueba).
+       * `fund(5000000)` o `fund({ amount: 5000000 })`: las dos formas mandan el mismo cuerpo.
+       */
+      fund(amount?: number | { amount?: number }): Promise<TestFundResult>;
     };
     webhooks: {
       /** Lanza si la firma no valida o el timestamp está fuera de la ventana. */

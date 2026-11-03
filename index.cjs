@@ -175,8 +175,14 @@ function BePago(secret, opts = {}) {
     /** Solo con claves sk_test_: simula que el pagador pagó (el cobro pasa a paid y sale el webhook charge.paid). */
     sandbox: {
       pay: (ref) => request('POST', `/v1/test/charges/${encodeURIComponent(ref)}/pay`),
-      /** Carga saldo de prueba para pagos masivos (sin monto: la carga estándar). */
-      fund: (amount) => request('POST', '/v1/test/balance/fund', amount == null ? undefined : { amount }),
+      /**
+       * Carga saldo de prueba para pagos masivos (sin monto: la carga estándar).
+       * Acepta el monto solo (`fund(5000000)`) o el mismo cuerpo de la API (`fund({ amount: 5000000 })`).
+       */
+      fund: (amount) => {
+        const value = amount !== null && typeof amount === 'object' ? amount.amount : amount;
+        return request('POST', '/v1/test/balance/fund', value == null ? undefined : { amount: value });
+      },
     },
     webhooks: {
       /**

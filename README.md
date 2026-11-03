@@ -11,10 +11,10 @@ cada ejemplo de acá funciona copiado tal cual.
 ## Instalación
 
 ```bash
-npm install github:bepago/sdk-node#v1.6.2
+npm install github:bepago/sdk-node#v1.6.3
 ```
 
-(Mientras el paquete npm `bepago` se actualiza a 1.6.2 se instala desde su tag
+(Mientras el paquete npm `bepago` se actualiza a 1.6.3 se instala desde su tag
 de GitHub: es el mismo paquete y el mismo `import BePago from 'bepago'`.)
 
 ## Uso
@@ -118,6 +118,7 @@ await bp.charges.cancel('pedido-1843');                  // uno todavía sin pag
 await bp.charges.refund('pedido-1842', 'cliente canceló');
 await bp.charges.balance();
 await bp.sandbox.pay('pedido-1844');                     // solo sk_test_: simula el pago
+await bp.sandbox.fund({ amount: 5000000 });              // solo sk_test_: saldo de prueba (o fund(5000000), o fund())
 ```
 
 La misma referencia devuelve siempre el mismo cobro, también vencido: si el

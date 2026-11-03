@@ -11,10 +11,10 @@ cada ejemplo de acá funciona copiado tal cual.
 ## Instalación
 
 ```bash
-npm install github:bepago/sdk-node#v1.6.3
+npm install github:bepago/sdk-node#v1.6.4
 ```
 
-(Mientras el paquete npm `bepago` se actualiza a 1.6.3 se instala desde su tag
+(Mientras el paquete npm `bepago` se actualiza a 1.6.4 se instala desde su tag
 de GitHub: es el mismo paquete y el mismo `import BePago from 'bepago'`.)
 
 ## Uso
@@ -140,14 +140,17 @@ imagen. El iframe toma el alto de su contenido.
 <script src="https://bepago.com/sdk/bepago-1.5.0.js"
         integrity="sha384-rNIcmH1wI1RykstAPx0YrfMuW7+1WVXqzjTDqNYUgQlk65R8N9CRIauntZQJoHkI" crossorigin="anonymous"></script>
 <script>
+  const orderId = 'pedido-1842';   // el id de TU orden (lo pone tu página)
   BePago.checkout({
     url: checkoutUrl,           // la checkout_url que devolvió TU backend
     mount: '#bepago-checkout',
     theme: 'light',             // 'dark' si tu página tiene fondo oscuro
     showAmount: true,           // false si ya mostrás el monto en tu página
-    onPaid: ({ reference }) => {
+    onPaid: () => {
       // SOLO UI: mostrá "¡Gracias!" o redirigí. La confirmación es de tu backend.
-      location.href = '/gracias/' + reference;
+      // A gracias con el id de TU orden: la reference es la del intento
+      // (pedido-1842-2 en el segundo).
+      location.href = '/gracias/' + orderId;
     },
   });
 </script>
@@ -217,7 +220,9 @@ const evt = bp.webhooks.verify(process.env.BEPAGO_WEBHOOK_SECRET, {
 La **clave de idempotencia es obligatoria** en pagos y en lotes (mín. 8
 caracteres, única por pago o lote), igual que en la API: el SDK la exige antes
 de mandar el pedido. Repetir el mismo pedido con la misma clave devuelve el
-mismo pago, sin crear otro.
+mismo pago, sin crear otro. Sin clave, la promesa se rechaza con un
+`BePagoError` `missing_idempotency_key` (`status` 0): lo atrapa el mismo
+`try/await` o `.catch()` que los errores de la API.
 
 ```js
 const payout = await bp.payouts.create({

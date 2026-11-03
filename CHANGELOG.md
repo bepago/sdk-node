@@ -1,5 +1,9 @@
 # Cambios — bePago SDK para Node.js
 
+## 1.6.4 — 2026-11-03
+
+- `payouts.create` y `payouts.batches.create` sin clave de idempotencia (o con menos de 8 caracteres) devuelven una promesa rechazada con `BePagoError` (`code` `missing_idempotency_key`, `status` 0), como los demás errores. Antes lanzaban un `Error` común de forma sincrónica, que `.catch()` no atrapaba.
+
 ## 1.6.3 — 2026-11-03
 
 - `sandbox.fund` acepta también el cuerpo de la API: `fund({ amount: 5000000 })` (además de `fund(5000000)` y `fund()`). Antes un objeto llegaba como `amount` y la API respondía 400.

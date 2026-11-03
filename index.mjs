@@ -149,7 +149,8 @@ export default function BePago(secret, opts = {}) {
     },
     payouts: {
       /** `idempotencyKey` es OBLIGATORIO (mín. 8 caracteres), igual que en la API: el mismo valor = el mismo pago. */
-      create: (params, idempotencyKey) => request('POST', '/v1/payouts', params, { idempotencyKey: requireIdempotencyKey(idempotencyKey) }),
+      // async: sin clave, una promesa rechazada con BePagoError (se atrapa con .catch o try/await)
+      create: async (params, idempotencyKey) => request('POST', '/v1/payouts', params, { idempotencyKey: requireIdempotencyKey(idempotencyKey) }),
       get: (id) => request('GET', `/v1/payouts/${encodeURIComponent(id)}`),
       /** Pagos del más nuevo al más viejo: { data, has_more, next_cursor }. Filtros: limit, status, from, to, cursor. */
       list: (params) => request('GET', `/v1/payouts${query(params)}`),
@@ -166,7 +167,7 @@ export default function BePago(secret, opts = {}) {
        *   await bp.payouts.batches.get(lote.id);
        */
       batches: {
-        create: (params, idempotencyKey) => request('POST', '/v1/payouts/batches', params, { idempotencyKey: requireIdempotencyKey(idempotencyKey) }),
+        create: async (params, idempotencyKey) => request('POST', '/v1/payouts/batches', params, { idempotencyKey: requireIdempotencyKey(idempotencyKey) }),
         get: (id) => request('GET', `/v1/payouts/batches/${encodeURIComponent(id)}`),
       },
     },
@@ -319,11 +320,13 @@ export default function BePago(secret, opts = {}) {
 
 /**
  * Pagos y lotes llevan X-Idempotency-Key OBLIGATORIO (mín. 8 caracteres), igual
- * que la API (400 missing_idempotency_key): se valida acá antes de firmar.
+ * que la API (400 missing_idempotency_key): se valida acá antes de firmar. Sin
+ * clave, BePagoError con el mismo código que la API y status 0 (no hubo request);
+ * create() es async, así que llega como promesa rechazada.
  */
 function requireIdempotencyKey(key) {
   if (typeof key !== 'string' || key.trim().length < 8) {
-    throw new Error('bePago: falta idempotencyKey (string de al menos 8 caracteres, único por pago o lote)');
+    throw new BePagoError('bePago: falta idempotencyKey (string de al menos 8 caracteres, único por pago o lote)', { code: 'missing_idempotency_key' });
   }
   return key;
 }

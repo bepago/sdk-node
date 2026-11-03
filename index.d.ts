@@ -278,13 +278,14 @@ export interface BePagoClient {
     confirm(ref: string): Promise<ConfirmResult>;
   };
   payouts: {
-    /** `idempotencyKey` obligatorio (mín. 8 caracteres): la misma clave = el mismo pago. */
+    /** `idempotencyKey` obligatorio (mín. 8 caracteres): la misma clave = el mismo pago. Sin ella, la promesa se rechaza con BePagoError `missing_idempotency_key` (status 0). */
     create(params: CreatePayoutParams, idempotencyKey: string): Promise<Payout>;
     get(id: string): Promise<Payout>;
     list(params?: ListParams<PayoutStatus>): Promise<ListPage<Payout>>;
     cancel(id: string): Promise<Payout>;
     balance(): Promise<PayoutsBalance>;
     batches: {
+      /** `idempotencyKey` obligatorio, como en payouts.create. */
       create(params: CreateBatchParams, idempotencyKey: string): Promise<Batch>;
       get(id: string): Promise<Batch>;
     };
@@ -309,9 +310,9 @@ export interface BePagoClient {
 export declare class BePagoError extends Error {
   constructor(message: string, init?: { status?: number; code?: string | null; requestId?: string | null; details?: unknown; response?: unknown });
   name: 'BePagoError';
-  /** HTTP; 0 si no hubo respuesta. */
+  /** HTTP; 0 si no hubo respuesta (o si el SDK lo frenó antes de mandar el request). */
   status: number;
-  /** Código de bePago (insufficient_funds…) o network_error, timeout, invalid_response, missing_key_id. */
+  /** Código de bePago (insufficient_funds…) o network_error, timeout, invalid_response, missing_key_id, missing_idempotency_key. */
   code: string | null;
   requestId: string | null;
   details: unknown;

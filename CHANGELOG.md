@@ -1,5 +1,10 @@
 # Cambios — bePago SDK para Node.js
 
+## 1.6.2 — 2026-11-03
+
+- `sandbox.fund(amount?)`: carga saldo de prueba para pagos masivos (`POST /v1/test/balance/fund`, solo `sk_test_`).
+- Tipos de pagos y lotes como los devuelve la API (`destination` en snake_case, `batch_number`, filas con `id: null` mientras el lote espera aprobación).
+
 ## 1.6.1 — 2026-11-03
 
 - El evento de `webhooks.verify` / `onEvent` trae `merchant_id` (tu ID de comercio), como el cuerpo real del aviso.

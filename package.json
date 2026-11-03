@@ -1,6 +1,6 @@
 {
   "name": "bepago",
-  "version": "1.6.1",
+  "version": "1.6.2",
   "description": "SDK oficial de bePago para Node.js (18+, sin dependencias, con tipos TypeScript; import o require)",
   "type": "module",
   "main": "./index.cjs",

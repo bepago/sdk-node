@@ -105,6 +105,11 @@ export type PayoutDestination =
   | { type: 'alias'; alias: string }
   | { type: 'bank_account'; bank_code: string; account_number: string; document: string; holder_name: string };
 
+/** Destino registrado de un pago (sin la cuenta ni el documento completos). */
+export type PayoutDestinationView =
+  | { type: 'alias'; alias: string }
+  | { type: 'bank_account'; bank_code: string; account_last4: string; holder_name: string };
+
 export interface CreatePayoutParams {
   amount: number;
   currency: 'PYG';
@@ -131,9 +136,22 @@ export interface Payout {
   failure_code: string | null;
   operation_number: string | null;
   beneficiary_name: string | null;
-  destination: { type: 'alias'; alias: string } | { type: 'bank_account'; [field: string]: unknown };
+  destination: PayoutDestinationView;
   created_at: string;
   [extra: string]: unknown;
+}
+
+export interface TestFundResult {
+  /** Lo que se cargó (puede ser menos que lo pedido si el saldo llegaba al tope). */
+  amount: number;
+  fee: number;
+  credited: number;
+  available: number;
+  reserved: number;
+  fees_payable: number;
+  max_available: number;
+  currency: 'PYG';
+  livemode: false;
 }
 
 export interface PayoutsBalance {
@@ -152,8 +170,10 @@ export interface CreateBatchParams {
 
 export interface BatchRow {
   row: number;
-  id: string;
-  status: PayoutStatus;
+  /** null mientras el lote espera aprobación: el pago de la fila se crea al aprobar. */
+  id: string | null;
+  /** `pending` mientras el lote espera aprobación (`cancelled` si se rechazó); después, el estado del pago. */
+  status: PayoutStatus | 'pending';
   amount: number;
   fee: number;
   net: number;
@@ -161,10 +181,13 @@ export interface BatchRow {
   operation_number: string | null;
   failure_code: string | null;
   beneficiary_name: string | null;
+  destination: PayoutDestinationView;
 }
 
 export interface Batch {
   id: string;
+  /** Número de lote del comercio, p. ej. "L-0042". */
+  batch_number: string;
   status: BatchStatus;
   livemode: boolean;
   total_rows: number;
@@ -173,7 +196,8 @@ export interface Batch {
   total_amount: number;
   total_fee: number;
   currency: 'PYG';
-  invalid: Array<{ row: number; reason: string; [extra: string]: unknown }>;
+  /** Filas que quedaron afuera: código (amount_below_minimum, bank_unknown…) y motivo. */
+  invalid: Array<{ row: number; code: string; reason: string; [extra: string]: unknown }>;
   payouts: BatchRow[];
   [extra: string]: unknown;
 }
@@ -268,6 +292,8 @@ export interface BePagoClient {
   /** Solo con claves sk_test_. */
   sandbox: {
     pay(ref: string): Promise<Charge>;
+    /** Carga saldo de prueba para pagos masivos (sin monto: la carga estándar; tope total del saldo de prueba). */
+    fund(amount?: number): Promise<TestFundResult>;
   };
   webhooks: {
     /** Lanza si la firma no valida o el timestamp está fuera de la ventana. */

@@ -175,6 +175,8 @@ function BePago(secret, opts = {}) {
     /** Solo con claves sk_test_: simula que el pagador pagó (el cobro pasa a paid y sale el webhook charge.paid). */
     sandbox: {
       pay: (ref) => request('POST', `/v1/test/charges/${encodeURIComponent(ref)}/pay`),
+      /** Carga saldo de prueba para pagos masivos (sin monto: la carga estándar). */
+      fund: (amount) => request('POST', '/v1/test/balance/fund', amount == null ? undefined : { amount }),
     },
     webhooks: {
       /**

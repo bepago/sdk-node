@@ -3,7 +3,7 @@
  *
  * Usage:
  *   import BePago from 'bepago';
- *   const bp = BePago('sk_test_…');
+ *   const bp = BePago('sk_test_…');   // el Key ID (pk_…) sale del secreto; con claves viejas: { keyId: 'pk_…' }
  *   const charge = await bp.charges.create({ reference: 'order-1', currency: 'PYG', amount: 150000, description: 'Test' });
  *   // opcional: method: 'qr_sip' | 'pix' | 'qr_ar' (uno de los activos del comercio) fuerza ese método
  */
@@ -19,12 +19,41 @@ export function computeSignatureV2({ secret, timestamp, nonce, method, path, ide
   return createHmac('sha256', secret).update(canonical, 'utf8').digest('hex');
 }
 
+/** Error de la API o de la conexión: `status` (HTTP; 0 sin respuesta), `code`, `requestId`, `details`. */
+export class BePagoError extends Error {
+  constructor(message, { status = 0, code = null, requestId = null, details = null, response = null } = {}) {
+    super(message);
+    this.name = 'BePagoError';
+    this.status = status;
+    this.code = code;
+    this.requestId = requestId;
+    this.details = details;
+    this.response = response;
+  }
+}
+
+/**
+ * Key ID público (pk_…) de un secreto. Los secretos de ahora llevan adentro el
+ * cuerpo de su Key ID (sk_<modo>_<16 del Key ID><43>); los anteriores no, y con
+ * esos devuelve null (hay que pasar el Key ID aparte).
+ */
+export function keyIdFromSecret(secret) {
+  const m = /^sk_(test|live)_([A-Za-z0-9_-]+)$/.exec(String(secret ?? ''));
+  return m && m[2].length === 59 ? `pk_${m[1]}_${m[2].slice(0, 16)}` : null;
+}
+
+const MISSING_KEY_ID = 'bePago: esta clave secreta es de un formato anterior y no trae su Key ID adentro. '
+  + "Pasalo aparte: BePago(secret, { keyId: 'pk_…' }). Está completo, con botón Copiar, en Integraciones › Claves de API (columna Clave pública).";
+
 export default function BePago(secret, opts = {}) {
-  const base = opts.baseUrl ?? 'https://bepago.com/api';
-  // The key ID is the part before the first underscore pair: pk_test_xxx or sk_test_xxx
-  // But for the API, X-Api-Key is the full key ID (pk_test_…), and the secret is sk_test_…
-  // Convention: the user passes the secret (sk_), and the key ID (pk_) is derived or passed separately.
-  const keyId = opts.keyId ?? secret.replace(/^sk_/, 'pk_');
+  if (typeof secret !== 'string' || secret === '') {
+    throw new Error('bePago: falta la clave secreta (sk_test_… o sk_live_…). La creás en Integraciones › Claves de API.');
+  }
+  // https://bepago.com/api — acepta también la dirección con /v1 al final (como la muestra el panel)
+  const base = String(opts.baseUrl ?? 'https://bepago.com/api').replace(/\/+$/, '').replace(/\/v1$/, '');
+  // Sin Key ID (secreto del formato anterior) igual se puede verificar webhooks; la API lo pide al primer request
+  const keyId = opts.keyId ?? keyIdFromSecret(secret);
+  const timeoutMs = opts.timeoutMs ?? 30_000;
 
   function sign(method, path, body, idempotencyKey) {
     const timestamp = String(Date.now());
@@ -35,6 +64,7 @@ export default function BePago(secret, opts = {}) {
   }
 
   async function request(method, path, body, extra = {}) {
+    if (!keyId) throw new BePagoError(MISSING_KEY_ID, { code: 'missing_key_id' });
     const { timestamp, nonce, signature, bodyStr } = sign(method, path, body, extra.idempotencyKey);
     const headers = {
       'Content-Type': 'application/json',
@@ -45,29 +75,49 @@ export default function BePago(secret, opts = {}) {
       'X-Signature': signature,
     };
     if (extra.idempotencyKey) headers['X-Idempotency-Key'] = extra.idempotencyKey;
-    const res = await fetch(base + path, { method, headers, body: bodyStr || undefined });
-    const data = await res.json();
-    if (!res.ok) {
-      const err = new Error(data?.error?.message ?? `HTTP ${res.status}`);
-      err.code = data?.error?.code;
-      err.status = res.status;
-      err.response = data;
-      throw err;
+    let res;
+    try {
+      res = await fetch(base + path, { method, headers, body: bodyStr || undefined, signal: AbortSignal.timeout(timeoutMs) });
+    } catch (e) {
+      const timeout = e?.name === 'TimeoutError';
+      // Sin respuesta no se sabe si la API lo procesó: en pagos, reintentá con la MISMA idempotencyKey.
+      throw new BePagoError(timeout ? `bePago: sin respuesta en ${timeoutMs} ms` : `bePago: no se pudo conectar con ${base} (${e?.cause?.code ?? e?.message ?? e})`,
+        { code: timeout ? 'timeout' : 'network_error' });
     }
+    const text = await res.text();
+    let data = null;
+    try { data = text ? JSON.parse(text) : null; } catch { /* respuesta que no es JSON (proxy, 502) */ }
+    if (!res.ok) {
+      const e = data?.error ?? {};
+      throw new BePagoError(e.message ?? `bePago: HTTP ${res.status}${data ? '' : ' (respuesta sin JSON)'}`, {
+        status: res.status, code: e.code ?? (data ? null : 'invalid_response'), requestId: e.request_id ?? res.headers.get('x-request-id'),
+        details: e.details ?? null, response: data ?? text,
+      });
+    }
+    if (data === null && text) throw new BePagoError('bePago: respuesta sin JSON', { status: res.status, code: 'invalid_response', response: text });
     return data;
   }
+
+  const query = (params) => {
+    const q = new URLSearchParams(Object.entries(params ?? {}).filter(([, v]) => v !== undefined && v !== null).map(([k, v]) => [k, String(v)])).toString();
+    return q ? `?${q}` : '';
+  };
 
   const api = {
     charges: {
       create: (params) => request('POST', '/v1/charges', params),
       get: (ref) => request('GET', `/v1/charges/${encodeURIComponent(ref)}`),
+      /** Cobros del más nuevo al más viejo: { data, has_more, next_cursor }. Filtros: limit, status, from, to, cursor. */
+      list: (params) => request('GET', `/v1/charges${query(params)}`),
+      /** Cancela un cobro todavía sin pagar (created/pending). */
+      cancel: (ref) => request('POST', `/v1/charges/${encodeURIComponent(ref)}/cancel`),
       refund: (ref, reason) => request('POST', `/v1/charges/${encodeURIComponent(ref)}/refund`, { reason }),
       balance: () => request('GET', '/v1/charges/balance'),
       /**
        * Confirma el estado REAL de un cobro consultando la API (fuente de verdad).
        * Usalo para decidir si entregás: nunca confíes en el navegador ni en el
-       * iframe. Devuelve `{ paid, status, charge }` — `paid` es true solo si el
-       * cobro figura `paid` en bePago.
+       * iframe. Devuelve `{ paid, status, charge }` — `paid` es true si el
+       * cobro figura `paid` o `settled` (pagado y ya liquidado) en bePago.
        *
        *   const { paid, charge } = await bp.charges.confirm(orderId);
        *   if (paid && charge.amount === order.amount) entregar();
@@ -77,13 +127,15 @@ export default function BePago(secret, opts = {}) {
       async confirm(ref) {
         const charge = await request('GET', `/v1/charges/${encodeURIComponent(ref)}`);
         const status = charge?.status ?? charge?.data?.status;
-        return { paid: status === 'paid', status, charge };
+        return { paid: status === 'paid' || status === 'settled', status, charge };
       },
     },
     payouts: {
       /** `idempotencyKey` es OBLIGATORIO (mín. 8 caracteres), igual que en la API: el mismo valor = el mismo pago. */
       create: (params, idempotencyKey) => request('POST', '/v1/payouts', params, { idempotencyKey: requireIdempotencyKey(idempotencyKey) }),
       get: (id) => request('GET', `/v1/payouts/${encodeURIComponent(id)}`),
+      /** Pagos del más nuevo al más viejo: { data, has_more, next_cursor }. Filtros: limit, status, from, to, cursor. */
+      list: (params) => request('GET', `/v1/payouts${query(params)}`),
       cancel: (id) => request('POST', `/v1/payouts/${encodeURIComponent(id)}/cancel`),
       balance: () => request('GET', '/v1/balance'),
       /**
@@ -100,6 +152,10 @@ export default function BePago(secret, opts = {}) {
         create: (params, idempotencyKey) => request('POST', '/v1/payouts/batches', params, { idempotencyKey: requireIdempotencyKey(idempotencyKey) }),
         get: (id) => request('GET', `/v1/payouts/batches/${encodeURIComponent(id)}`),
       },
+    },
+    /** Solo con claves sk_test_: simula que el pagador pagó (el cobro pasa a paid y sale el webhook charge.paid). */
+    sandbox: {
+      pay: (ref) => request('POST', `/v1/test/charges/${encodeURIComponent(ref)}/pay`),
     },
     webhooks: {
       /**
@@ -121,7 +177,10 @@ export default function BePago(secret, opts = {}) {
        *   if (seen.has(evt.id)) return; // duplicado
        *   seen.add(evt.id);
        *
-       * @returns {{ id: string, event: string, livemode: boolean, data: object }}
+       * `test` es true en el aviso de prueba de «Probar mi webhook» del panel
+       * (charge.paid de un cobro que no existe): no entregues nada con él.
+       *
+       * @returns {{ id: string, event: string, livemode: boolean, test: boolean, data: object }}
        */
       verify(webhookSecret, { id, timestamp, body, signature }, opts = {}) {
         const toleranceMs = (opts.toleranceSeconds ?? 300) * 1000;
@@ -132,15 +191,21 @@ export default function BePago(secret, opts = {}) {
         const age = Math.abs(Date.now() - Number(timestamp));
         if (!Number.isFinite(age) || age > toleranceMs) throw new Error('bePago webhook: timestamp fuera de la ventana permitida');
         const payload = JSON.parse(body);
-        return { id: id ?? payload.id, event: payload.event, livemode: payload.livemode, data: payload.data };
+        return { id: id ?? payload.id, event: payload.event, livemode: payload.livemode, test: payload.test === true, data: payload.data };
       },
 
       /**
        * Crea un manejador de webhooks seguro-por-defecto. Verifica firma y
        * frescura (±5 min), descarta duplicados por X-BePago-Event-Id y SOLO
-       * invoca `onPaid` con eventos `charge.paid` válidos y no vistos. Siempre
-       * responde 200 a entregas válidas (aunque sean duplicadas, para que
+       * invoca `onPaid` con eventos `charge.paid` válidos y no vistos; `onEvent`
+       * recibe TODOS los eventos (payout.completed, payout.failed, charge.refunded…).
+       * Responde 200 a entregas válidas (también a las duplicadas, para que
        * bePago deje de reintentar) y 400 a firmas/timestamps inválidos.
+       *
+       * Si `onPaid`/`onEvent` lanzan, responde 500 y el evento NO queda como
+       * visto: el reintento de bePago lo vuelve a procesar (que tu entrega sea
+       * idempotente por orden). El aviso de prueba del panel («Probar mi
+       * webhook», `test: true`) responde 200 sin llamar a tus funciones.
        *
        * No montes el parser de JSON del framework delante: el handler necesita
        * el cuerpo CRUDO (string/Buffer) para validar la firma byte a byte. Usá
@@ -167,6 +232,10 @@ export default function BePago(secret, opts = {}) {
 
         async function process({ headers = {}, body }) {
           const h = lowerHeaders(headers);
+          if (body != null && typeof body === 'object' && !Buffer.isBuffer(body)) {
+            // El framework ya parseó el JSON: reserializarlo cambia los bytes y la firma no valida.
+            return { status: 400, body: JSON.stringify({ error: 'raw_body_required', message: RAW_BODY_HINT }), duplicate: false, ok: false };
+          }
           const raw = toRawBody(body);
           let evt;
           try {
@@ -179,18 +248,22 @@ export default function BePago(secret, opts = {}) {
           } catch (err) {
             return { status: 400, body: JSON.stringify({ error: 'invalid_signature' }), duplicate: false, ok: false };
           }
+          if (evt.test) {
+            return { status: 200, body: JSON.stringify({ received: true, test: true }), duplicate: false, ok: true, test: true };
+          }
           if (await seen.has(evt.id)) {
             return { status: 200, body: JSON.stringify({ received: true, duplicate: true }), duplicate: true, ok: true };
           }
-          await seen.add(evt.id);
           try {
             if (typeof onEvent === 'function') await onEvent(evt);
             if (evt.event === 'charge.paid' && typeof onPaid === 'function') {
               await onPaid({ reference: evt.data?.reference, data: evt.data, event: evt });
             }
           } catch (err) {
+            // Sin marcar como visto: el reintento lo vuelve a procesar.
             return { status: 500, body: JSON.stringify({ error: 'handler_error' }), duplicate: false, ok: false };
           }
+          await seen.add(evt.id);
           return { status: 200, body: JSON.stringify({ received: true }), duplicate: false, ok: true };
         }
 
@@ -199,7 +272,8 @@ export default function BePago(secret, opts = {}) {
           /** Middleware Express. Montalo con el raw body: app.post(url, express.raw({type:'*&#47;*'}), wh.express()) */
           express() {
             return async (req, res) => {
-              const r = await process({ headers: req.headers, body: req.body });
+              const r = await process({ headers: req.headers, body: req.rawBody ?? req.body });
+              if (r.status === 400 && r.body.includes('raw_body_required')) console.error(RAW_BODY_HINT);
               res.status(r.status).set('content-type', 'application/json').send(r.body);
             };
           },
@@ -207,6 +281,7 @@ export default function BePago(secret, opts = {}) {
           fastify() {
             return async (req, reply) => {
               const r = await process({ headers: req.headers, body: req.rawBody ?? req.body });
+              if (r.status === 400 && r.body.includes('raw_body_required')) req.log?.error?.(RAW_BODY_HINT);
               reply.code(r.status).header('content-type', 'application/json').send(r.body);
             };
           },
@@ -240,11 +315,13 @@ function lowerHeaders(headers) {
   return out;
 }
 
+const RAW_BODY_HINT = 'bePago webhook: llegó el cuerpo ya parseado (objeto) y la firma se calcula sobre los bytes crudos. '
+  + "Express: montá la ruta con express.raw({ type: '*/*' }) ANTES de app.use(express.json()). "
+  + 'Fastify: registrá la ruta en un plugin propio con un parser que deje el cuerpo como string (ver /docs#webhooks).';
+
 function toRawBody(body) {
   if (body == null) return '';
   if (typeof body === 'string') return body;
   if (Buffer.isBuffer(body)) return body.toString('utf8');
-  // Último recurso: si el framework ya parseó a objeto, reserializar romperá la
-  // firma. Lo exponemos igual para que falle ruidoso y no silencioso.
-  return typeof body === 'object' ? JSON.stringify(body) : String(body);
+  return String(body);
 }

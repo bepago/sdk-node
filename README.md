@@ -9,8 +9,11 @@ cada ejemplo de acá funciona copiado tal cual.
 ## Instalación
 
 ```bash
-npm install bepago
+npm install github:bepago/sdk-node#v1.5.0
 ```
+
+(Mientras el paquete npm `bepago` se actualiza a 1.5.0 se instala desde su tag
+de GitHub: es el mismo paquete y el mismo `import BePago from 'bepago'`.)
 
 ## Uso
 
@@ -20,9 +23,30 @@ import BePago from 'bepago';
 const bp = BePago(process.env.BEPAGO_SECRET); // sk_test_… o sk_live_…: la clave decide el modo
 ```
 
-La clave (`sk_…`) la creás en tu panel (Integraciones › Claves de API). El key
-ID público (`pk_…`) se deriva solo; si necesitás pasarlo aparte:
-`BePago(secret, { keyId: 'pk_…' })`.
+La clave (`sk_…`) está en tu panel (Integraciones › Claves de API): el secreto
+lleva adentro la clave pública (`pk_…`), así que alcanza con él. Las claves de un
+formato anterior no la traen: el SDK te la pide con un error claro y la pasás
+aparte, copiándola completa de la tabla de claves: `BePago(secret, { keyId: 'pk_…' })`.
+
+Opciones: `baseUrl` (`'https://bepago.com/api'`, con o sin `/v1` al final) y
+`timeoutMs` (30000).
+
+### Errores
+
+Todo error es un `BePagoError` con `status` (HTTP; 0 si no hubo respuesta),
+`code`, `requestId`, `details` y `response`. Sin respuesta de la API (red caída,
+tiempo agotado) el `code` es `network_error` o `timeout`: en pagos, reintentá con
+la **misma** clave de idempotencia. Una respuesta que no es JSON (un 502 de un
+proxy) da `invalid_response`.
+
+```js
+import BePago, { BePagoError } from 'bepago';
+try {
+  await bp.payouts.create(pago, 'pago-0001');
+} catch (err) {
+  if (err instanceof BePagoError) console.error(err.status, err.code, err.requestId);
+}
+```
 
 ## Cobros
 
@@ -54,9 +78,15 @@ Consultar, reembolsar y ver saldo:
 
 ```js
 await bp.charges.get('pedido-1842');
+await bp.charges.list({ status: 'paid', limit: 50 });   // { data, has_more, next_cursor }
+await bp.charges.cancel('pedido-1843');                  // uno todavía sin pagar
 await bp.charges.refund('pedido-1842', 'cliente canceló');
 await bp.charges.balance();
+await bp.sandbox.pay('pedido-1844');                     // solo sk_test_: simula el pago
 ```
+
+La misma referencia devuelve siempre el mismo cobro, también vencido: si el
+cobro de una orden venció, creá otro con otra referencia (`pedido-1842-2`).
 
 ### 2. Embeber el checkout en tu página (iframe, `bepago.js`)
 
@@ -71,7 +101,8 @@ imagen. El iframe toma el alto de su contenido.
 
 ```html
 <div id="bepago-checkout"></div>
-<script src="https://bepago.com/sdk/bepago.js"></script>
+<script src="https://bepago.com/sdk/bepago-1.5.0.js"
+        integrity="sha384-rNIcmH1wI1RykstAPx0YrfMuW7+1WVXqzjTDqNYUgQlk65R8N9CRIauntZQJoHkI" crossorigin="anonymous"></script>
 <script>
   BePago.checkout({
     url: checkoutUrl,           // la checkout_url que devolvió TU backend
@@ -89,27 +120,34 @@ imagen. El iframe toma el alto de su contenido.
 `onPaid` llega cuando el checkout avisa `{ type: 'bepago:paid', reference }`
 (postMessage, solo a los dominios que registraste en Integraciones › Dominio del
 checkout). Corre en el navegador del comprador y se puede falsificar: **nunca
-entregues desde ahí**. `onComplete` sigue existiendo (fin del checkout, en
-cualquier estado).
+entregues desde ahí**. `onComplete({ reference, status })` llega al terminar el
+checkout, en cualquier estado.
 
 ### 3. Recibir el webhook y entregar (en tu backend)
 
 El handler verifica firma y frescura (±5 min), descarta duplicados por
 `x-bepago-event-id`, responde 200 y **solo** invoca `onPaid` con eventos
-válidos. Antes de entregar, reconfirmá por API con `charges.confirm` y compará
-el monto contra tu orden.
+válidos; `onEvent` recibe todos los eventos (`payout.completed`, `payout.failed`…).
+Antes de entregar, reconfirmá por API con `charges.confirm` (`paid` es true con
+`paid` o `settled`) y compará el monto contra tu orden.
+
+- Si tu función lanza, responde 500 y el evento **no** queda como visto: el
+  reintento de bePago lo vuelve a procesar.
+- El aviso de prueba de «Probar mi webhook» llega con `"test": true`: el handler
+  responde 200 sin llamar a tus funciones.
 
 ```js
-// El handler necesita el cuerpo CRUDO: montá express.raw ANTES del parser JSON.
+// El handler necesita el cuerpo CRUDO: esta ruta va ANTES de app.use(express.json()).
 const webhook = bp.webhooks.handler({
   secret: process.env.BEPAGO_WEBHOOK_SECRET,
   // store: en producción, respaldalo en tu base (tabla de event ids) para no
   // entregar dos veces tras un reinicio. Por defecto es un Set en memoria.
   onPaid: async ({ reference }) => {
-    const order = await db.orders.find(reference);
+    const order = await db.orders.findByChargeReference(reference);
     const { paid, charge } = await bp.charges.confirm(reference);   // fuente de verdad
-    if (paid && order && charge.amount === order.amount) await entregar(order);
+    if (paid && order && Number(charge.amount) === Number(order.amount)) await entregar(order);
   },
+  onEvent: async (evt) => { /* opcional: todos los eventos */ },
 });
 
 app.post('/webhooks/bepago', express.raw({ type: '*/*' }), webhook.express());
@@ -118,8 +156,12 @@ app.post('/webhooks/bepago', express.raw({ type: '*/*' }), webhook.express());
 Fastify:
 
 ```js
-fastify.addContentTypeParser('*', { parseAs: 'string' }, (req, body, done) => done(null, body));
-fastify.post('/webhooks/bepago', webhook.fastify());
+// Plugin propio: el webhook recibe el cuerpo como string sin tocar el JSON del resto de tu API.
+fastify.register(async (scope) => {
+  scope.removeAllContentTypeParsers();
+  scope.addContentTypeParser('*', { parseAs: 'string' }, (req, body, done) => done(null, body));
+  scope.post('/webhooks/bepago', webhook.fastify());
+});
 ```
 
 Verificación a mano (si no usás el handler):
@@ -149,6 +191,7 @@ const payout = await bp.payouts.create({
 }, 'idem-key-unica-por-pago');
 
 await bp.payouts.get(payout.id);
+await bp.payouts.list({ status: 'failed' });
 await bp.payouts.cancel(payout.id);
 await bp.payouts.balance();
 ```

@@ -55,6 +55,8 @@ function BePago(secret, opts = {}) {
   const base = String(opts.baseUrl ?? 'https://bepago.com/api').replace(/\/+$/, '').replace(/\/v1$/, '');
   // Sin Key ID (secreto del formato anterior) igual se puede verificar webhooks; la API lo pide al primer request
   const keyId = opts.keyId ?? keyIdFromSecret(secret);
+  // Modo de la clave (sk_live_ → true, sk_test_ → false; otra cosa → null): el handler de webhooks ignora avisos del otro modo
+  const keyLivemode = secret.startsWith('sk_live_') ? true : secret.startsWith('sk_test_') ? false : null;
   const timeoutMs = opts.timeoutMs ?? 30_000;
   // Reintentos automáticos SOLO cuando repetir no puede duplicar nada: GET
   // (lectura) ante red caída, tiempo agotado o 502/503/504; POST con clave de
@@ -125,12 +127,12 @@ function BePago(secret, opts = {}) {
   const api = {
     charges: {
       create: (params) => request('POST', '/v1/charges', params),
-      get: (ref) => request('GET', `/v1/charges/${encodeURIComponent(ref)}`),
+      get: async (ref) => request('GET', `/v1/charges/${segment(ref)}`),
       /** Cobros del más nuevo al más viejo: { data, has_more, next_cursor }. Filtros: limit, status, from, to, cursor. */
       list: (params) => request('GET', `/v1/charges${query(params)}`),
       /** Cancela un cobro todavía sin pagar (created/pending). */
-      cancel: (ref) => request('POST', `/v1/charges/${encodeURIComponent(ref)}/cancel`),
-      refund: (ref, reason) => request('POST', `/v1/charges/${encodeURIComponent(ref)}/refund`, { reason }),
+      cancel: async (ref) => request('POST', `/v1/charges/${segment(ref)}/cancel`),
+      refund: async (ref, reason) => request('POST', `/v1/charges/${segment(ref)}/refund`, { reason }),
       balance: () => request('GET', '/v1/charges/balance'),
       /**
        * Confirma el estado REAL de un cobro consultando la API (fuente de verdad).
@@ -144,7 +146,7 @@ function BePago(secret, opts = {}) {
        * @returns {Promise<{ paid: boolean, status: string, charge: object }>}
        */
       async confirm(ref) {
-        const charge = await request('GET', `/v1/charges/${encodeURIComponent(ref)}`);
+        const charge = await request('GET', `/v1/charges/${segment(ref)}`);
         const status = charge?.status ?? charge?.data?.status;
         return { paid: status === 'paid' || status === 'settled', status, charge };
       },
@@ -153,10 +155,10 @@ function BePago(secret, opts = {}) {
       /** `idempotencyKey` es OBLIGATORIO (mín. 8 caracteres), igual que en la API: el mismo valor = el mismo pago. */
       // async: sin clave, una promesa rechazada con BePagoError (se atrapa con .catch o try/await)
       create: async (params, idempotencyKey) => request('POST', '/v1/payouts', params, { idempotencyKey: requireIdempotencyKey(idempotencyKey) }),
-      get: (id) => request('GET', `/v1/payouts/${encodeURIComponent(id)}`),
+      get: async (id) => request('GET', `/v1/payouts/${segment(id)}`),
       /** Pagos del más nuevo al más viejo: { data, has_more, next_cursor }. Filtros: limit, status, from, to, cursor. */
       list: (params) => request('GET', `/v1/payouts${query(params)}`),
-      cancel: (id) => request('POST', `/v1/payouts/${encodeURIComponent(id)}/cancel`),
+      cancel: async (id) => request('POST', `/v1/payouts/${segment(id)}/cancel`),
       balance: () => request('GET', '/v1/balance'),
       /**
        * Lotes de pagos masivos. `create` carga el lote entero (hasta 1000 pagos);
@@ -170,12 +172,12 @@ function BePago(secret, opts = {}) {
        */
       batches: {
         create: async (params, idempotencyKey) => request('POST', '/v1/payouts/batches', params, { idempotencyKey: requireIdempotencyKey(idempotencyKey) }),
-        get: (id) => request('GET', `/v1/payouts/batches/${encodeURIComponent(id)}`),
+        get: async (id) => request('GET', `/v1/payouts/batches/${segment(id)}`),
       },
     },
     /** Solo con claves sk_test_: simula que el pagador pagó (el cobro pasa a paid y sale el webhook charge.paid). */
     sandbox: {
-      pay: (ref) => request('POST', `/v1/test/charges/${encodeURIComponent(ref)}/pay`),
+      pay: async (ref) => request('POST', `/v1/test/charges/${segment(ref)}/pay`),
       /**
        * Carga saldo de prueba para pagos masivos (sin monto: la carga estándar).
        * Acepta el monto solo (`fund(5000000)`) o el mismo cuerpo de la API (`fund({ amount: 5000000 })`).
@@ -233,7 +235,9 @@ function BePago(secret, opts = {}) {
        * Si `onPaid`/`onEvent` lanzan, responde 500 y el evento NO queda como
        * visto: el reintento de bePago lo vuelve a procesar (que tu entrega sea
        * idempotente por orden). El aviso de prueba del panel («Probar mi
-       * webhook», `test: true`) responde 200 sin llamar a tus funciones.
+       * webhook», `test: true`) responde 200 sin llamar a tus funciones. Un
+       * aviso del otro modo (`livemode` distinto del de tu clave: de prueba con
+       * sk_live_, o real con sk_test_) también: 200 y se ignora.
        *
        * No montes el parser de JSON del framework delante: el handler necesita
        * el cuerpo CRUDO (string/Buffer) para validar la firma byte a byte. Usá
@@ -279,6 +283,11 @@ function BePago(secret, opts = {}) {
           if (evt.test) {
             return { status: 200, body: JSON.stringify({ received: true, test: true }), duplicate: false, ok: true, test: true };
           }
+          // Aviso del otro modo (de prueba a un cliente con sk_live_, o al revés): 200 y se ignora,
+          // sin callbacks ni marcarlo como visto. Con una clave de modo desconocido, como siempre.
+          if (keyLivemode !== null && typeof evt.livemode === 'boolean' && evt.livemode !== keyLivemode) {
+            return { status: 200, body: JSON.stringify({ received: true, ignored: 'livemode_mismatch' }), duplicate: false, ok: true, ignored: true };
+          }
           if (await seen.has(evt.id)) {
             return { status: 200, body: JSON.stringify({ received: true, duplicate: true }), duplicate: true, ok: true };
           }
@@ -318,6 +327,20 @@ function BePago(secret, opts = {}) {
     },
   };
   return api;
+}
+
+/**
+ * Un segmento de ruta (tu `reference` o un id), con encodeURIComponent: así
+ * viaja y así se firma (`ord:1` → `ord%3A1`). Vacío, `.` o `..` no son un
+ * segmento (fetch los resolvería como ruta y llegaría a otro endpoint):
+ * BePagoError `invalid_reference` sin hacer el request.
+ */
+function segment(value) {
+  const s = String(value ?? '');
+  if (s === '' || s === '.' || s === '..') {
+    throw new BePagoError(`bePago: referencia o id inválido para la ruta (${JSON.stringify(s)})`, { code: 'invalid_reference' });
+  }
+  return encodeURIComponent(s);
 }
 
 /**

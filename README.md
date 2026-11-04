@@ -11,10 +11,10 @@ cada ejemplo de acá funciona copiado tal cual.
 ## Instalación
 
 ```bash
-npm install github:bepago/sdk-node#v1.6.4
+npm install github:bepago/sdk-node#v1.6.5
 ```
 
-(Mientras el paquete npm `bepago` se actualiza a 1.6.4 se instala desde su tag
+(Mientras el paquete npm `bepago` se actualiza a 1.6.5 se instala desde su tag
 de GitHub: es el mismo paquete y el mismo `import BePago from 'bepago'`.)
 
 ## Uso

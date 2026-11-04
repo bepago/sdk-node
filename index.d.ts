@@ -249,13 +249,15 @@ export interface WebhookProcessInput {
 }
 
 export interface WebhookProcessResult {
-  /** 200 (válido, duplicado o de prueba), 400 (firma, timestamp o cuerpo) o 500 (tu función lanzó). */
+  /** 200 (válido, duplicado, de prueba o del otro modo), 400 (firma, timestamp o cuerpo) o 500 (tu función lanzó). */
   status: 200 | 400 | 500;
   /** JSON listo para responder. */
   body: string;
   duplicate: boolean;
   ok: boolean;
   test?: true;
+  /** El aviso es del otro modo (livemode distinto del de tu clave): 200 sin llamar a tus funciones. */
+  ignored?: true;
 }
 
 export interface WebhookHandler {
